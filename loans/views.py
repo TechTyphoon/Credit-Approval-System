@@ -404,8 +404,47 @@ def create_loan(request):
         return JsonResponse({'error': 'Internal server error'}, status=500)
 
 def view_loan(request, loan_id):
-    """Placeholder for view-loan endpoint"""
-    return JsonResponse({"message": f"View loan {loan_id} endpoint - to be implemented"})
+    """
+    View details of a loan and its customer.
+    Returns loan details with customer information as per PRD.
+    """
+    try:
+        # Validate loan_id parameter
+        try:
+            loan_id = int(loan_id)
+        except (ValueError, TypeError):
+            return JsonResponse({'error': 'Invalid loan_id format'}, status=400)
+
+        # Get loan from database
+        try:
+            loan = Loan.objects.select_related('customer').get(loan_id=loan_id)
+        except Loan.DoesNotExist:
+            return JsonResponse({'error': 'Loan not found'}, status=404)
+
+        # Prepare customer information
+        customer_data = {
+            'id': loan.customer.customer_id,
+            'first_name': loan.customer.first_name,
+            'last_name': loan.customer.last_name,
+            'phone_number': loan.customer.phone_number,
+            'age': loan.customer.age
+        }
+
+        # Prepare response in exact PRD format
+        response_data = {
+            'loan_id': loan.loan_id,
+            'customer': customer_data,
+            'loan_amount': float(loan.loan_amount),
+            'interest_rate': float(loan.interest_rate),
+            'monthly_installment': float(loan.monthly_repayment),
+            'tenure': loan.tenure
+        }
+
+        return JsonResponse(response_data, status=200)
+
+    except Exception as e:
+        logger.error(f"Error in view_loan endpoint: {str(e)}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
 
 def view_loans(request, customer_id):
     """Placeholder for view-loans endpoint"""
