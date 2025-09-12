@@ -2,7 +2,7 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from .models import Customer
+from .models import Customer, Loan
 import json
 import logging
 
@@ -272,9 +272,136 @@ def apply_approval_rules(credit_score, requested_rate, loan_amount):
         # Do not approve any loans
         return False, None
 
+@csrf_exempt
+@require_http_methods(["POST"])
 def create_loan(request):
-    """Placeholder for create-loan endpoint"""
-    return JsonResponse({"message": "Create loan endpoint - to be implemented"})
+    """
+    Create a loan if customer is eligible.
+    """
+    try:
+        # Parse request body
+        data = json.loads(request.body)
+
+        # Extract required fields
+        customer_id = data.get('customer_id')
+        loan_amount = data.get('loan_amount')
+        interest_rate = data.get('interest_rate')
+        tenure = data.get('tenure')
+
+        # Validate required fields
+        if customer_id is None:
+            return JsonResponse({'error': 'customer_id is required'}, status=400)
+        if loan_amount is None:
+            return JsonResponse({'error': 'loan_amount is required'}, status=400)
+        if interest_rate is None:
+            return JsonResponse({'error': 'interest_rate is required'}, status=400)
+        if tenure is None:
+            return JsonResponse({'error': 'tenure is required'}, status=400)
+
+        # Validate data types and ranges
+        try:
+            customer_id = int(customer_id)
+            loan_amount = float(loan_amount)
+            interest_rate = float(interest_rate)
+            tenure = int(tenure)
+        except (ValueError, TypeError):
+            return JsonResponse({'error': 'Invalid data types'}, status=400)
+
+        if loan_amount <= 0:
+            return JsonResponse({'error': 'loan_amount must be positive'}, status=400)
+        if interest_rate < 0:
+            return JsonResponse({'error': 'interest_rate cannot be negative'}, status=400)
+        if tenure <= 0:
+            return JsonResponse({'error': 'tenure must be positive'}, status=400)
+
+        # Get customer from database
+        try:
+            customer = Customer.objects.get(customer_id=customer_id)
+        except Customer.DoesNotExist:
+            return JsonResponse({'error': 'Customer not found'}, status=404)
+
+        # Calculate credit score
+        credit_score = calculate_credit_score(customer)
+
+        # Check if sum of current loans exceeds approved limit
+        current_loans_sum = sum(float(loan.loan_amount) for loan in customer.loans.all())
+        if current_loans_sum > float(customer.approved_limit):
+            credit_score = 0
+
+        # Calculate monthly EMI
+        monthly_installment = calculate_emi(loan_amount, interest_rate, tenure)
+
+        # Check EMI constraint (sum of current EMIs > 50% of monthly salary)
+        current_emis_sum = sum(float(loan.monthly_repayment) for loan in customer.loans.all())
+        if current_emis_sum + monthly_installment > 0.5 * float(customer.monthly_salary):
+            # Loan rejected due to EMI constraint
+            return JsonResponse({
+                'loan_id': None,
+                'customer_id': customer_id,
+                'loan_approved': False,
+                'message': 'Loan rejected: Total EMIs would exceed 50% of monthly salary',
+                'monthly_installment': round(monthly_installment, 2)
+            }, status=200)
+
+        # Apply approval rules based on credit score
+        approval, corrected_interest_rate = apply_approval_rules(
+            credit_score, interest_rate, loan_amount
+        )
+
+        if not approval:
+            # Loan rejected due to credit score
+            return JsonResponse({
+                'loan_id': None,
+                'customer_id': customer_id,
+                'loan_approved': False,
+                'message': f'Loan rejected: Credit score {credit_score} is too low',
+                'monthly_installment': round(monthly_installment, 2)
+            }, status=200)
+
+        # Use corrected interest rate if provided, otherwise use original
+        final_interest_rate = corrected_interest_rate if corrected_interest_rate else interest_rate
+
+        # Recalculate EMI with corrected interest rate if needed
+        if corrected_interest_rate:
+            monthly_installment = calculate_emi(loan_amount, corrected_interest_rate, tenure)
+
+        # Generate loan_id (auto-increment)
+        last_loan = Loan.objects.order_by('-loan_id').first()
+        loan_id = (last_loan.loan_id + 1) if last_loan else 1001
+
+        # Create loan record
+        from datetime import datetime, timedelta
+        start_date = datetime.now().date()
+        end_date = start_date + timedelta(days=30 * tenure)  # Approximate end date
+
+        loan = Loan.objects.create(
+            loan_id=loan_id,
+            customer=customer,
+            loan_amount=loan_amount,
+            tenure=tenure,
+            interest_rate=final_interest_rate,
+            monthly_repayment=monthly_installment,
+            emis_paid_on_time=0,  # New loan, no payments yet
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        logger.info(f"Created loan: {loan}")
+
+        # Return success response
+        return JsonResponse({
+            'loan_id': loan.loan_id,
+            'customer_id': customer_id,
+            'loan_approved': True,
+            'message': 'Loan approved and created successfully',
+            'monthly_installment': round(monthly_installment, 2)
+        }, status=201)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        logger.error(f"Error in create_loan endpoint: {str(e)}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
 
 def view_loan(request, loan_id):
     """Placeholder for view-loan endpoint"""
