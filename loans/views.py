@@ -447,5 +447,40 @@ def view_loan(request, loan_id):
         return JsonResponse({'error': 'Internal server error'}, status=500)
 
 def view_loans(request, customer_id):
-    """Placeholder for view-loans endpoint"""
-    return JsonResponse({"message": f"View loans for customer {customer_id} endpoint - to be implemented"})
+    """
+    View all current loans for a given customer.
+    Returns list of loans with repayments_left calculation as per PRD.
+    """
+    try:
+        # Validate customer_id parameter
+        try:
+            customer_id = int(customer_id)
+        except (ValueError, TypeError):
+            return JsonResponse({'error': 'Invalid customer_id format'}, status=400)
+
+        # Get customer from database
+        try:
+            customer = Customer.objects.get(customer_id=customer_id)
+        except Customer.DoesNotExist:
+            return JsonResponse({'error': 'Customer not found'}, status=404)
+
+        # Get all loans for this customer
+        loans = customer.loans.all()
+
+        # Prepare response in exact PRD format
+        loans_data = []
+        for loan in loans:
+            loan_data = {
+                'loan_id': loan.loan_id,
+                'loan_amount': float(loan.loan_amount),
+                'interest_rate': float(loan.interest_rate),
+                'monthly_installment': float(loan.monthly_repayment),
+                'repayments_left': loan.repayments_left
+            }
+            loans_data.append(loan_data)
+
+        return JsonResponse(loans_data, safe=False, status=200)
+
+    except Exception as e:
+        logger.error(f"Error in view_loans endpoint: {str(e)}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
