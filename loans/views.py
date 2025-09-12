@@ -97,9 +97,180 @@ def register(request):
         return JsonResponse({'error': 'Internal server error'}, status=500)
 
 
+@csrf_exempt
+@require_http_methods(["POST"])
 def check_eligibility(request):
-    """Placeholder for check-eligibility endpoint"""
-    return JsonResponse({"message": "Check eligibility endpoint - to be implemented"})
+    """
+    Check loan eligibility based on credit score and approval rules.
+    """
+    try:
+        # Parse request body
+        data = json.loads(request.body)
+
+        # Extract required fields
+        customer_id = data.get('customer_id')
+        loan_amount = data.get('loan_amount')
+        interest_rate = data.get('interest_rate')
+        tenure = data.get('tenure')
+
+        # Validate required fields
+        if customer_id is None:
+            return JsonResponse({'error': 'customer_id is required'}, status=400)
+        if loan_amount is None:
+            return JsonResponse({'error': 'loan_amount is required'}, status=400)
+        if interest_rate is None:
+            return JsonResponse({'error': 'interest_rate is required'}, status=400)
+        if tenure is None:
+            return JsonResponse({'error': 'tenure is required'}, status=400)
+
+        # Validate data types and ranges
+        try:
+            customer_id = int(customer_id)
+            loan_amount = float(loan_amount)
+            interest_rate = float(interest_rate)
+            tenure = int(tenure)
+        except (ValueError, TypeError):
+            return JsonResponse({'error': 'Invalid data types'}, status=400)
+
+        if loan_amount <= 0:
+            return JsonResponse({'error': 'loan_amount must be positive'}, status=400)
+        if interest_rate < 0:
+            return JsonResponse({'error': 'interest_rate cannot be negative'}, status=400)
+        if tenure <= 0:
+            return JsonResponse({'error': 'tenure must be positive'}, status=400)
+
+        # Get customer from database
+        try:
+            customer = Customer.objects.get(customer_id=customer_id)
+        except Customer.DoesNotExist:
+            return JsonResponse({'error': 'Customer not found'}, status=404)
+
+        # Calculate credit score
+        credit_score = calculate_credit_score(customer)
+
+        # Check if sum of current loans exceeds approved limit
+        current_loans_sum = sum(float(loan.loan_amount) for loan in customer.loans.all())
+        if current_loans_sum > float(customer.approved_limit):
+            credit_score = 0
+
+        # Calculate monthly EMI
+        monthly_installment = calculate_emi(loan_amount, interest_rate, tenure)
+
+        # Check EMI constraint (sum of current EMIs > 50% of monthly salary)
+        current_emis_sum = sum(float(loan.monthly_repayment) for loan in customer.loans.all())
+        if current_emis_sum + monthly_installment > 0.5 * float(customer.monthly_salary):
+            approval = False
+            corrected_interest_rate = None
+        else:
+            # Apply approval rules based on credit score
+            approval, corrected_interest_rate = apply_approval_rules(
+                credit_score, interest_rate, loan_amount
+            )
+
+        # Prepare response
+        response_data = {
+            'customer_id': customer_id,
+            'approval': approval,
+            'interest_rate': interest_rate,
+            'corrected_interest_rate': corrected_interest_rate,
+            'tenure': tenure,
+            'monthly_installment': round(monthly_installment, 2)
+        }
+
+        return JsonResponse(response_data, status=200)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        logger.error(f"Error in check_eligibility endpoint: {str(e)}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
+
+
+def calculate_credit_score(customer):
+    """
+    Calculate credit score based on historical loan data.
+    Returns a score between 0-100.
+    """
+    loans = customer.loans.all()
+
+    if not loans.exists():
+        # New customer with no loan history
+        return 25  # Base score for new customers
+
+    total_loans = loans.count()
+    paid_on_time = sum(1 for loan in loans if loan.emis_paid_on_time == loan.tenure)
+    paid_on_time_ratio = paid_on_time / total_loans if total_loans > 0 else 0
+
+    # Current year activity (simplified - using loans from recent period)
+    from datetime import datetime
+    current_year = datetime.now().year
+    recent_loans = loans.filter(start_date__year=current_year)
+    loan_activity_current_year = recent_loans.count()
+
+    # Loan approved volume (total amount of loans taken)
+    total_loan_volume = sum(float(loan.loan_amount) for loan in loans)
+
+    # Credit score calculation (weighted factors)
+    score = 0
+
+    # Past loans paid on time (40% weight)
+    score += paid_on_time_ratio * 40
+
+    # Number of loans taken (20% weight) - more loans = more experience
+    loan_count_score = min(total_loans * 5, 20)  # Max 20 points
+    score += loan_count_score
+
+    # Current year activity (20% weight)
+    activity_score = min(loan_activity_current_year * 4, 20)  # Max 20 points
+    score += activity_score
+
+    # Loan volume (20% weight) - higher volume = more trust
+    volume_score = min(total_loan_volume / 100000, 20)  # Max 20 points per lakh
+    score += volume_score
+
+    return min(100, max(0, round(score)))
+
+
+def calculate_emi(principal, annual_rate, tenure_months):
+    """
+    Calculate EMI using compound interest formula.
+    """
+    if annual_rate == 0:
+        return principal / tenure_months
+
+    monthly_rate = annual_rate / (12 * 100)  # Convert to decimal
+
+    emi = principal * (monthly_rate * (1 + monthly_rate) ** tenure_months) / \
+          ((1 + monthly_rate) ** tenure_months - 1)
+
+    return emi
+
+
+def apply_approval_rules(credit_score, requested_rate, loan_amount):
+    """
+    Apply approval rules based on credit score and return (approval, corrected_rate).
+    """
+    if credit_score > 50:
+        # Approve any loan
+        return True, None
+
+    elif 30 < credit_score <= 50:
+        # Approve only if interest rate > 12%
+        if requested_rate > 12:
+            return True, None
+        else:
+            return True, 12.0
+
+    elif 10 < credit_score <= 30:
+        # Approve only if interest rate > 16%
+        if requested_rate > 16:
+            return True, None
+        else:
+            return True, 16.0
+
+    else:  # credit_score <= 10
+        # Do not approve any loans
+        return False, None
 
 def create_loan(request):
     """Placeholder for create-loan endpoint"""
