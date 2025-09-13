@@ -227,7 +227,6 @@ Ensure code quality, organization, and segregation of responsibilities.
 
 Adding unit tests is optional but will be considered for bonus points.
 
-The assignment must be completed within 36 hours.
 
 Entire application and dependencies (including DB) must run with a single docker-compose command.
 
